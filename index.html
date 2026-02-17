@@ -545,6 +545,12 @@ const Parser={
             'serialize','deserialize','toJSON','fromJSON',
             // Express/API patterns
             'index','show','store','update','destroy','create','edit',
+            // Python common patterns
+            '__init__','__str__','__repr__','__len__','__eq__','__hash__','__enter__','__exit__',
+            '__getattr__','__setattr__','__delattr__','__getitem__','__setitem__','__contains__',
+            '__iter__','__next__','__call__','__bool__','__lt__','__gt__','__le__','__ge__',
+            'upgrade','downgrade','setUp','tearDown','setUpClass','tearDownClass',
+            'main','create_app','configure','register','on_startup','on_shutdown','lifespan',
             // Vue lifecycle
             'mounted','created','updated','destroyed','beforeCreate','beforeMount',
             // Angular lifecycle
@@ -562,6 +568,10 @@ const Parser={
             if(fn.name.length<3)return;
             // Skip class methods (same method name in different classes is normal)
             if(fn.isClassMethod)return;
+            // Skip Python class-scoped names (ClassName.method)
+            if(fn.name.includes('.'))return;
+            // Skip decorated functions (framework handlers have similar structures by design)
+            if(fn.decorators&&fn.decorators.length>0)return;
 
             if(!fnByName[fn.name])fnByName[fn.name]=[];
             fnByName[fn.name].push(fn);
@@ -2274,7 +2284,9 @@ function App(){
                             isTopLevel:fn.isTopLevel!==false,  // Default to true for backward compat
                             isExported:fn.isExported||false,
                             isClassMethod:fn.isClassMethod||false,
-                            type:fn.type||'function'
+                            type:fn.type||'function',
+                            decorators:fn.decorators||null,
+                            className:fn.className||null
                         };
                     }
                 });
@@ -2311,17 +2323,31 @@ function App(){
                 }
                 Object.values(fnStats).forEach(function(s){s.callers=Array.from(s.callers.values());s.count=s.internal+s.external;});
                 var issues=[];
-                // Only flag truly unused functions - must be top-level and have zero calls
-                // Class methods and nested functions are expected to be called via their parent
+                // Only flag truly unused functions with language-aware filtering
+                // Understands Python decorators, framework conventions, magic methods, etc.
                 var deadFns=Object.entries(fnStats).filter(function(x){
-                    var stats=x[1];
+                    var name=x[0],stats=x[1];
                     // Skip if has any calls (internal or external)
                     if(stats.internal>0||stats.external>0)return false;
                     // Skip class methods - they're called via instance
                     if(stats.isClassMethod)return false;
                     // Skip nested functions - they're private to their scope
                     if(!stats.isTopLevel)return false;
-                    // This is a top-level function with zero calls - likely dead
+                    // Python-aware: skip decorated functions (framework-registered: routes, signals, etc.)
+                    if(stats.decorators&&stats.decorators.length>0)return false;
+                    // Python-aware: skip classes (instantiated dynamically, registered by frameworks)
+                    if(stats.type==='class'||stats.type==='dataclass'||stats.type==='abstract_class')return false;
+                    // Python-aware: skip dunder/magic methods (__init__, __str__, __enter__, etc.)
+                    var baseName=name.includes('.')?name.split('.').pop():name;
+                    if(baseName.startsWith('__')&&baseName.endsWith('__'))return false;
+                    // Python-aware: skip test functions (discovered by pytest/unittest)
+                    if(baseName.startsWith('test_')||baseName==='setUp'||baseName==='tearDown'||baseName==='setUpClass'||baseName==='tearDownClass')return false;
+                    if(stats.file&&(stats.file.includes('test_')||stats.file.includes('_test.')||stats.file.includes('/tests/')))return false;
+                    // Python-aware: skip migration functions (Alembic upgrade/downgrade)
+                    if((baseName==='upgrade'||baseName==='downgrade')&&stats.file&&(stats.file.includes('migration')||stats.file.includes('alembic')||stats.file.includes('versions')))return false;
+                    // Python-aware: skip common framework entry points and hooks
+                    if(['main','create_app','make_app','get_app','setup','configure','register','on_startup','on_shutdown','lifespan'].indexOf(baseName)>=0)return false;
+                    // This is a top-level function with zero calls and no framework registration
                     return true;
                 });
                 if(deadFns.length)issues.push({type:'warning',title:deadFns.length+' Unused Functions',desc:'Functions not called from other files',items:deadFns.map(function(x){return{name:x[0],file:x[1].file,line:x[1].line,code:x[1].code};})});
@@ -2519,7 +2545,9 @@ function App(){
                         isTopLevel:fn.isTopLevel!==false,
                         isExported:fn.isExported||false,
                         isClassMethod:fn.isClassMethod||false,
-                        type:fn.type||'function'
+                        type:fn.type||'function',
+                        decorators:fn.decorators||null,
+                        className:fn.className||null
                     };
                 }
             });
@@ -2555,10 +2583,24 @@ function App(){
             Object.values(fnStats).forEach(function(s){s.callers=Array.from(s.callers.values());s.count=s.internal+s.external;});
             var issues=[];
             var deadFns=Object.entries(fnStats).filter(function(x){
-                var stats=x[1];
+                var name=x[0],stats=x[1];
                 if(stats.internal>0||stats.external>0)return false;
                 if(stats.isClassMethod)return false;
                 if(!stats.isTopLevel)return false;
+                // Python-aware: skip decorated functions (framework-registered: routes, signals, etc.)
+                if(stats.decorators&&stats.decorators.length>0)return false;
+                // Python-aware: skip classes
+                if(stats.type==='class'||stats.type==='dataclass'||stats.type==='abstract_class')return false;
+                // Python-aware: skip dunder/magic methods
+                var baseName=name.includes('.')?name.split('.').pop():name;
+                if(baseName.startsWith('__')&&baseName.endsWith('__'))return false;
+                // Python-aware: skip test functions
+                if(baseName.startsWith('test_')||baseName==='setUp'||baseName==='tearDown'||baseName==='setUpClass'||baseName==='tearDownClass')return false;
+                if(stats.file&&(stats.file.includes('test_')||stats.file.includes('_test.')||stats.file.includes('/tests/')))return false;
+                // Python-aware: skip migration functions (Alembic)
+                if((baseName==='upgrade'||baseName==='downgrade')&&stats.file&&(stats.file.includes('migration')||stats.file.includes('alembic')||stats.file.includes('versions')))return false;
+                // Python-aware: skip common framework entry points
+                if(['main','create_app','make_app','get_app','setup','configure','register','on_startup','on_shutdown','lifespan'].indexOf(baseName)>=0)return false;
                 return true;
             });
             if(deadFns.length)issues.push({type:'warning',title:deadFns.length+' Unused Functions',desc:'Functions not called from other files',items:deadFns.map(function(x){return{name:x[0],file:x[1].file,line:x[1].line,code:x[1].code};})});
@@ -2799,6 +2841,7 @@ function App(){
         if(!data||!svgRef.current)return;
         var svg=d3.select(svgRef.current);
         svg.selectAll('*').remove();
+        try{
         var w=svgRef.current.clientWidth;
         var h=svgRef.current.clientHeight;
         var filteredFiles=folderFilter?data.files.filter(function(f){return f.folder===folderFilter||f.folder.startsWith(folderFilter+'/');}):data.files;
@@ -2807,6 +2850,7 @@ function App(){
         var linkMap=new Map();
         data.connections.forEach(function(c){
             if(!fileIds.has(c.source)||!fileIds.has(c.target))return;
+            if(c.source===c.target)return;// Skip self-links
             var k=c.source+'|'+c.target;
             if(!linkMap.has(k))linkMap.set(k,{source:c.source,target:c.target,count:0});
             linkMap.get(k).count+=c.count;
@@ -2943,7 +2987,8 @@ function App(){
             if(tickCount%hullInterval===0)updateHulls();
         });
         node.selectAll('text').attr('opacity',graphConfig.showLabels?1:0);
-        return function(){sim.stop();};
+        }catch(e){console.error('Force graph error:',e);svg.selectAll('*').remove();svg.append('text').attr('x',20).attr('y',30).attr('fill','var(--t3)').text('Graph rendering error: '+e.message);}
+        return function(){if(simRef.current)simRef.current.stop();};
     },[data,colorMap,colorMode,theme,folderFilter,graphConfig]);
 
     // Treemap visualization - Interactive with zoom, pan, selection, blast radius
@@ -3171,7 +3216,13 @@ function App(){
             return;
         }
         var sankey=d3.sankey().nodeId(function(d){return d.id;}).nodeWidth(20).nodePadding(15).extent([[0,0],[w-60,h-60]]);
-        var graph=sankey({nodes:nodes.map(function(d){return Object.assign({},d);}),links:links.map(function(d){return Object.assign({},d);})});
+        var graph;
+        try{
+            graph=sankey({nodes:nodes.map(function(d){return Object.assign({},d);}),links:links.map(function(d){return Object.assign({},d);})});
+        }catch(e){
+            g.append('text').attr('x',w/2-20).attr('y',h/2).attr('fill','var(--t3)').attr('font-size','12px').attr('text-anchor','middle').text('Sankey diagram unavailable: dependency graph has circular references. Try the Force Graph view.');
+            return;
+        }
         var tooltip=container.append('div').attr('class','treemap-tooltip').style('display','none').style('position','absolute');
         g.selectAll('path.sankey-link').data(graph.links).join('path').attr('class','sankey-link')
             .attr('d',d3.sankeyLinkHorizontal()).attr('fill','none')
@@ -3220,7 +3271,7 @@ function App(){
         data.connections.forEach(function(c){
             var src=typeof c.source==='object'?c.source.id:c.source;
             var tgt=typeof c.target==='object'?c.target.id:c.target;
-            if(fileIdx[src]!==undefined&&fileIdx[tgt]!==undefined)links.push({source:src,target:tgt,count:c.count||1});
+            if(fileIdx[src]!==undefined&&fileIdx[tgt]!==undefined&&src!==tgt)links.push({source:src,target:tgt,count:c.count||1});
         });
         var sim=d3.forceSimulation(nodes)
             .force('link',d3.forceLink(links).id(function(d){return d.id;}).distance(40).strength(0.3))
@@ -3293,7 +3344,7 @@ function App(){
         data.connections.forEach(function(c){
             var src=typeof c.source==='object'?c.source.id:c.source;
             var tgt=typeof c.target==='object'?c.target.id:c.target;
-            if(nodeMap[src]&&nodeMap[tgt])links.push({source:nodeMap[src],target:nodeMap[tgt],count:c.count||1});
+            if(nodeMap[src]&&nodeMap[tgt]&&src!==tgt)links.push({source:nodeMap[src],target:nodeMap[tgt],count:c.count||1});
         });
         var link=mainG.selectAll('path.bundle-link').data(links).join('path').attr('class','bundle-link')
             .attr('d',function(d){
