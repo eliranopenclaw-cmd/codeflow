@@ -96,6 +96,44 @@ async function analyzeFixture(name) {
   });
 }
 
+test('Parser normalizes non-string function names so analysis does not crash', async () => {
+  const index = Parser.buildFunctionNameIndex([123, 'Widget.render', null, undefined, '']);
+  assert(index.exact.has('123'));
+  assert.deepEqual(Array.from(index.byBase.render || []), ['Widget.render']);
+
+  const data = await buildAnalysisData({
+    analyzed: [{
+      path: 'demo.js',
+      name: 'demo.js',
+      folder: 'root',
+      content: '123();',
+      functions: [],
+      lines: 1,
+      layer: 'utils',
+      churn: 0,
+      isCode: true,
+    }],
+    allFns: [{
+      name: 123,
+      file: 'demo.js',
+      folder: 'root',
+      layer: 'utils',
+      line: 1,
+      code: '123();',
+      isTopLevel: true,
+      isExported: false,
+      isClassMethod: false,
+      type: 'function',
+    }],
+    excludePatterns: [],
+    progress() {},
+    yieldFn: async () => {},
+  });
+
+  assert.equal(data.stats.functions, 1);
+  assert.equal(data.functions[0].name, '123');
+});
+
 test('golden mixed-language fixture stays stable', async () => {
   const data = await analyzeFixture('golden-world');
 

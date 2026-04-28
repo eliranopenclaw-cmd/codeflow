@@ -864,6 +864,12 @@ const Parser={
     textExts:['.md','.markdown','.txt','.json','.jsonl','.yaml','.yml','.toml','.xml','.html','.htm','.css','.scss','.sass','.less','.svg','.graphql','.gql','.sql','.prisma','.proto','.tf','.tfvars','.env','.env.example','.gitignore','.gitattributes','.gitmodules','.eslintrc','.prettierrc','.babelrc','.editorconfig','.ini','.cfg','.conf','.properties','.lock','.csv','.tsv','.rst','.tex','.cmake','.rake','.vba','.bas','.cls','.xlsm','.xlam','.xlsb','.xla','.xlw','.mod','.sum'],
     textNames:['dockerfile','containerfile','makefile','rakefile','gemfile','podfile','pipfile','procfile','brewfile','justfile','taskfile','cmakelists.txt','license','copying','notice','readme','changelog','authors','contributors','owners','codeowners','go.mod','go.sum'],
     binExts:['.png','.jpg','.jpeg','.gif','.ico','.webp','.bmp','.svg','.woff','.woff2','.ttf','.eot','.otf','.pdf','.zip','.tar','.gz','.rar','.7z','.exe','.dll','.so','.dylib','.bin','.dat','.db','.sqlite','.mp3','.mp4','.wav','.avi','.mov','.webm'],
+    normalizeFunctionName:function(name){
+        if(name===null||name===undefined)return'';
+        if(typeof name==='string')return name.trim();
+        if(typeof name==='number'||typeof name==='bigint'||typeof name==='boolean')return String(name);
+        return'';
+    },
     isCode:function(n){
         var lower=n.toLowerCase();
         return Parser.codeExts.some(function(e){return lower.endsWith(e);})||
@@ -1576,6 +1582,10 @@ const Parser={
         // Track functions by line to allow same name at different locations
         var seenAtLine={};
         function addFn(fnObj){
+            if(!fnObj)return;
+            var normalizedName=Parser.normalizeFunctionName(fnObj.name);
+            if(!normalizedName)return;
+            fnObj=Object.assign({},fnObj,{name:normalizedName});
             var key=fnObj.name+'@'+fnObj.line;
             if(!seenAtLine[key]){
                 seenAtLine[key]=true;
@@ -2430,6 +2440,8 @@ const Parser={
         var exact=new Set();
         var byBase=Object.create(null);
         (fnNames||[]).forEach(function(fn){
+            fn=Parser.normalizeFunctionName(fn);
+            if(!fn)return;
             exact.add(fn);
             if(fn.indexOf('.')>=0){
                 var parts=fn.split('.');
@@ -3074,6 +3086,12 @@ async function buildAnalysisData(options){
     progress('Building dependency graph (1/5)...');
     await yieldFn();
     await Parser.prepareTreeSitter(analyzed);
+    allFns=(allFns||[]).map(function(fn){
+        if(!fn)return null;
+        var normalizedName=Parser.normalizeFunctionName(fn.name);
+        if(!normalizedName)return null;
+        return Object.assign({},fn,{name:normalizedName});
+    }).filter(Boolean);
     var fnNames=[...new Set(allFns.map(function(f){return f.name;}))];
     var fnNameIndex=Parser.buildFunctionNameIndex(fnNames);
     var fnDefLineIndex=Parser.buildFunctionDefLineIndex(allFns);
